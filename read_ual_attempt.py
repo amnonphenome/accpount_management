@@ -1,8 +1,7 @@
 import pandas as pd
-from helper_functions import get_engine
+from helper_functions import get_engine_tcpip
 import timeit
 start = timeit.default_timer()
-print("hello")
 
 dest_config = {
     "host": "localhost",
@@ -18,8 +17,8 @@ qa_config = {
     "user": "phenome",
     "password": "fCK@MiV^84wP"}
 
-dest_engine = get_engine(dest_config)
-src_engine = get_engine(qa_config)
+dest_engine = get_engine_tcpip(dest_config)
+src_engine = get_engine_tcpip(qa_config)
 
 conn_id = 1
 max_ual = int(pd.read_sql_query("select max_ual from max_ual where installation_id = {}".format(conn_id), dest_engine)
@@ -41,4 +40,4 @@ with src_engine.begin() as src_engine:
 # print(df.columns)
 
 end = timeit.default_timer()
-print(end - start)
+print("Process time: {}".format(end - start))

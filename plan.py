@@ -7,16 +7,18 @@
 #   "users_actions_categories"
 #   "application_modules"
 #   "users_actions_types"
+#   "installations"
 # combined tables (Small) in db_account_management >> am
 #   am_users
 #   am_organizations
 # Combined tables (Large) in db_account_management >> am
 #   am_ual (combined users_actions_log)
+#   am_ufo (combined unified_field_observations)
 # View  : max_ual group by installation_id
-# View  : rg_stats
+# View  : rg_stats group by ufo.rg_id
 # View? : users_stats
 
-# db construction (at first and at some version updates)
+# db initiate (at first and at some version updates)
 #   define src = qa
 #       create_engine_string(**kwargs)
 #   define dest = db_account_management
