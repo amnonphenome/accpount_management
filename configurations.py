@@ -9,18 +9,22 @@ dest_config = {
     "password": "tnbui115"}
 
 qa_config = {
+    "name": "qa",
     "host": "52.16.7.222",
     "port": 3306,
     "database": "pheno20",
     "user": "phenome",
-    "password": "fCK@MiV^84wP"}
+    "password": "fCK@MiV^84wP",
+    "ssh_host": None}  # needed for ruling out ssh connection
 
 unity_config = {
+    "name": "unity",
     "host": "52.16.89.59",
     "port": 3306,
     "database": "pheno20",
     "user": "phenome",
-    "password": "9azaDRu5"}
+    "password": "9azaDRu5",
+    "ssh_host": None}  # needed for ruling out ssh connection
 
 # connections file
 files_path = Path("C:\\Users\\amnon\\Documents\\Python_Scripts\\mysql_connection\\")
@@ -28,18 +32,13 @@ connections_file_path = Path(files_path, "connections.csv")
 
 # queries JSON
 queries = {
-    "users_actions": {
-        "name": "users_actions",
-        "query_string": "SELECT * FROM users_actions"},
-    "users_actions_categories": {
-        "name": "users_actions_categories",
-        "query_string": "SELECT * FROM users_actions_categories"},
-    "application_modules": {
-        "name": "application_modules",
-        "query_string": "SELECT * FROM application_modules"},
-    "users_actions_types": {
-        "name": "users_actions_types",
-        "query_string": "SELECT * FROM users_actions_types"},
+    "am_users_actions": {
+        "name": "am_users_actions",
+        "query_string": "SELECT ua.id, ua.name, ua.path, ua.arguments, ua.action_type_id, uat.name action_type, "
+                        "ua.category_id, uac.name category, ua.appmod_id, appmod.name appmod FROM users_actions ua "
+                        "LEFT JOIN users_actions_categories uac ON ua.category_id = uac.id LEFT JOIN "
+                        "application_modules appmod ON appmod.id = ua.appmod_id LEFT JOIN users_actions_types uat ON "
+                        "uat.id = ua.action_type_id"},
     "installations": {
         "name": "installations",
         "query_string": "SELECT * FROM installations"},
