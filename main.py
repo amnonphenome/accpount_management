@@ -26,6 +26,7 @@ if flag_installation:
     update_installations(unity_config, dest_config, query)  # todo: unity config since qa doesn't have all installations
 
 if flag_users or flag_orgs or flag_ual:
+
     main_loop_connections(connections, dest_config, flag_users=flag_users, flag_orgs=flag_orgs, flag_ual=flag_ual)
 
 # main loop of connections

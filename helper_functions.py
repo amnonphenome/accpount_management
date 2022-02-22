@@ -220,7 +220,7 @@ def main_loop_connections(connections: dict, dest_config: dict, flag_users=False
                                 users = pd.concat([users, new_users])
                                 print('OK ({} users)'.format(new_users.shape[0]))
                             if flag_ual:
-                                i=0
+                                i = 0
                                 ual_query = 'SELECT id, user_id, date, action_id FROM pheno20.users_actions_log where id > {}'.format(max_ual[installation_id])
                                 chunk_size = 100000
                                 for chunk in pd.read_sql_query(ual_query, src_engine, chunksize=chunk_size):
