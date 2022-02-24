@@ -44,7 +44,8 @@ queries = {
         "query_string": "SELECT * FROM installations"},
     "orgs": {
         "name": "orgs",
-        "query_string": "SELECT o.id, o.name organization, c.name country FROM organizations o join countries c on "
+        "query_string": "SELECT o.id organization_id, o.name organization, c.name country FROM organizations o join "
+                        "countries c on "
                         "o.country_id=c.id"},
     "users": {
         "name": "users",
@@ -52,6 +53,5 @@ queries = {
         "creation_date, is_adminisrator admin, active, create_research_group create_RG, varieties FROM users"},
     "users_actions_log": {
         "name": "users_actions_log",
-        "query_string": "SELECT id, uuid, user_id, date, action_id, research_group_id, folder_id, object_id, "
-                        "object_name, installation_id FROM users_actions_log where id > "},  # input max_id
+        "query_string": "SELECT id, user_id, date, action_id FROM pheno20.users_actions_log where id > {} "}  # max_id
 }
