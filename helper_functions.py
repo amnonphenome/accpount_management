@@ -1,7 +1,10 @@
 import pandas
 import sqlalchemy
 import pandas as pd
+from datetime import datetime
 from configurations import queries
+from pathlib import Path
+import asyncio
 
 
 def get_connections(connections_file_full_path: str):
@@ -24,7 +27,7 @@ def connect_over_ssh(ssh_config: dict, config: dict):
     :return: sqlalchemy_engine, ssh_server
     """
     print('Unable to connect over SSH yet')
-    engine = 'Unable to connect over SSH yet'
+    engine = None
     return engine  # todo: make work
     # from sshtunnel import SSHTunnelForwarder
     # ssh_server = SSHTunnelForwarder(
@@ -227,9 +230,12 @@ def main_loop_connections(connections: dict, dest_config: dict, flag_users=False
                                 print('OK ({} orgs)'.format(new_orgs.shape[0]))
                             if flag_ual:
                                 i = 0
-                                ual_query = 'SELECT id, user_id, date, action_id FROM pheno20.users_actions_log where' \
-                                            ' id > {} and year(date)>2019'.format(max_ual[installation_id])
+                                ual_query = 'SELECT id, user_id, date, action_id FROM users_actions_log WHERE ' \
+                                            'action_id IN (SELECT id FROM users_actions where to_display=1) AND ' \
+                                            'user_id IN (SELECT id FROM users WHERE organization_id!=15) AND ' \
+                                            'id > {} and year(date)>2019'.format(max_ual[installation_id])
                                 chunk_size = 100000
+                                print(ual_query)
                                 print('Copying to am_ual..')
                                 for chunk in pd.read_sql_query(ual_query, src_engine, chunksize=chunk_size):
                                     chunk['installation_id'] = installation_id
@@ -239,23 +245,21 @@ def main_loop_connections(connections: dict, dest_config: dict, flag_users=False
                                                  schema='db_account_management',
                                                  index=False)
                                     print('{} rows copied'.format(i))
-                                updated_max_ual['{}'.format(installation_id)] = \
-                                    pd.read_sql_query('SELECT max(id) FROM users_actions_log', src_engine).iloc[0][0]
-                                print("max_ual for installation id {} was {} and will be updated to {}".
-                                      format(installation_id,
-                                             max_ual[installation_id],
-                                             updated_max_ual['{}'.format(installation_id)]))
-                                pass
-
+                                try:
+                                    updated_max_ual = pd.read_sql_query('SELECT max(id) FROM users_actions_log',
+                                                                        src_engine).iloc[0][0]
+                                    statement = "UPDATE installations SET max_ual={} WHERE id={};"\
+                                        .format(updated_max_ual, installation_id)
+                                    print("Executing: {}".format(statement))
+                                    dest_engine.execute(statement)
+                                except Exception as e:
+                                    print('Error updating installations table: {}'.format(e))
                         except Exception as e:
                             print('Execution failed, error: {}'.format(e))
                 except Exception as e:
                     print('Failed1, error: {}'.format(e))
     except Exception as e:
         print('Failed2, error: {}'.format(e))
-    # print("users to return: {}".format(users))  # todo: delete
-    # print("orgs to return: {}".format(orgs))  # todo: delete
-    # print("ual to return: {}".format(updated_max_ual))  # todo: delete
     return users, orgs, updated_max_ual
 
 
@@ -306,23 +310,112 @@ def write_to_dest(df: pandas.DataFrame, dest_config: dict, table_name: str):
             print('Error updating table {}: {}'.format(table_name, e))
 
 
-def update_max_ual(updated_max_ual: dict, dest_config: dict):
+def simple_query_loop_connections(connections: dict, query: str, write_to_excel=True):
     """
 
-    :param updated_max_ual:
-    :param dest_config:
+    :param connections:
+    :param query:
+    :param write_to_excel:
     :return:
     """
-    dest_engine = get_engine_tcpip(dest_config)
-    with dest_engine.begin() as dest_engine:
+    df = pd.DataFrame()
+    installation_ids = connections.keys()
+    for installation_id in installation_ids:
+        src_config = connections[installation_id]
+        # get engine for current installation
+        src_engine = get_engine(src_config)
         try:
-            for installation_id in updated_max_ual:
-                statement = "UPDATE db_account_management.installations SET max_ual={} WHERE id={};"\
-                    .format(updated_max_ual[installation_id], installation_id)
-                print("Executing: {}".format(statement))
-                dest_engine.execute(statement)
+            print('Connecting to installation_id: {} - {}:'
+                  .format(src_config["installation_id"],
+                          src_config["name"]),
+                  end=' ')
+            with src_engine.begin() as src_engine:
+                print('OK')
+                try:
+                    print('Executing: {}'.format(query))
+                    new_rows = pd.read_sql_query(query, src_engine)
+                    new_rows['installation_id'] = installation_id
+                    df = pd.concat([df, new_rows])
+                    print('new rows: \n{})'.format(new_rows.head(5)))
+                except Exception as e:
+                    print('Query execution failed, error: {}'.format(e))
         except Exception as e:
-            print('Error updating installations table: {}'.format(e))
+            print('Connection failed, error: {}'.format(e))
+    if write_to_excel:
+        now = datetime.now()
+        dt_string = now.strftime("%y%m%d_%H%M%S")
+        file_name = "output_"+dt_string+".xlsx"
+        path = Path("output", file_name)
+        df_list = [df]
+        save_xls(df_list, path)
+    return df
+
+
+def save_xls(list_dfs, _path, sheets_names=None):
+    # query names should match with list_dfs - sheets will be named accordingly
+    if sheets_names is None:
+        sheets_names = []
+    with pd.ExcelWriter(_path, engine='xlsxwriter', options={'strings_to_formulas': False}) as writer:
+        for n, df in enumerate(list_dfs):
+            if len(sheets_names) > 0:
+                df.to_excel(writer, sheets_names[n])
+            else:
+                df.to_excel(writer, 'sheet%s' % n)
+        # writer.save()
+    print('output.xlsx path: {}'.format(_path))
+
+
+async def fetch_data_async(installation_id, src_config, query):
+    src_engine = get_engine(src_config)
+    if src_engine is not None:
+        try:
+            print('Executing query in installation_id: {} - {}'
+                  .format(src_config["installation_id"],
+                          src_config["name"]))
+            with src_engine.begin() as src_engine:
+                try:
+                    # print('Executing in installation_id {}'.format(installation_id))
+                    df = pd.read_sql_query(query, src_engine)
+                    df['installation_id'] = installation_id
+                    return df
+                except Exception as e:
+                    print('Query execution failed, error: {}'.format(e))
+        except Exception as e:
+            print('Connection failed, error: {}'.format(e))
+            return None
+    else:
+        return None
+
+
+async def async_query_loop_connections(connections: dict, query: str, write_to_excel=True):
+    """
+
+    :param connections:
+    :param query:
+    :param write_to_excel:
+    :return:
+    """
+    installation_ids = connections.keys()
+    tasks = []
+    replies = []
+    for installation_id in installation_ids:
+        src_config = connections[installation_id]
+        tasks.append(asyncio.create_task(fetch_data_async(installation_id, src_config, query)))
+    for task in tasks:
+        reply = await task
+        if reply is not None:
+            replies.append(reply)
+    if replies:
+        df = pd.concat(replies)
+
+        if write_to_excel:
+            now = datetime.now()
+            dt_string = now.strftime("%y%m%d_%H%M%S")
+            file_name = "output_"+dt_string+".xlsx"
+            path = Path("output", file_name)
+            df_list = [df]
+            save_xls(df_list, path)
+        return df
 
 
 exec(open("main.py").read())

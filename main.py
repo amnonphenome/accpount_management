@@ -1,19 +1,20 @@
 from timeit import default_timer as timer
 from datetime import timedelta
 from helper_functions import get_connections, update_users_actions, update_installations, main_loop_connections, \
-    write_to_dest, update_max_ual
+    write_to_dest, simple_query_loop_connections, async_query_loop_connections
 from configurations import connections_file_path, qa_config, unity_config, dest_config, queries
+import asyncio
 
 
 def update_db_account_management():
-    # Flags:
     flag_users_actions = False
     flag_installations = False
     flag_users = False
     flag_orgs = False
-    flag_ual = True
+    flag_ual = False
+    flag_simple_query = False
+    flag_async_query = True
 
-    # get connections dict by installation_id
     connections = get_connections(connections_file_path)
 
     if flag_users_actions:
@@ -35,8 +36,15 @@ def update_db_account_management():
             write_to_dest(users, dest_config, 'am_users')
         if flag_orgs:
             write_to_dest(orgs, dest_config, 'am_organizations')
-        if flag_ual:
-            update_max_ual(updated_max_ual, dest_config)
+
+    if flag_simple_query:
+        query = queries["field_entities"]["query_string"]
+        df = simple_query_loop_connections(connections, query, write_to_excel=True)
+
+    if flag_async_query:
+        query = queries["rg_info"]["query_string"]
+        df = asyncio.run(async_query_loop_connections(connections, query, write_to_excel=True))
+        print(df)
 
 
 def run():
@@ -48,4 +56,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
