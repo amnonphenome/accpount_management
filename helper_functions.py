@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 from configurations import queries
 from pathlib import Path
+from sshtunnel import SSHTunnelForwarder
 import asyncio
 
 
@@ -26,37 +27,21 @@ def connect_over_ssh(ssh_config: dict, config: dict):
     :param config:
     :return: sqlalchemy_engine, ssh_server
     """
-    print('Unable to connect over SSH yet')
-    engine = None
-    return engine  # todo: make work
-    # from sshtunnel import SSHTunnelForwarder
-    # ssh_server = SSHTunnelForwarder(
-    #     (ssh_config['ssh_host'], ssh_config['port']),
-    #     ssh_password=ssh_config["password"],
-    #     ssh_username=ssh_config["username"],
-    #     remote_bind_address=(config['host'], config['port']))
-    # ssh_server.start()
-    # config['port'] = ssh_server.local_bind_port
-    # engine = get_engine_tcpip(config)
-    # return engine, ssh_server
-
-    # Example from: https://stackoverflow.com/questions/30188796/connecting-to-mysql-database-via-ssh
-    # from sshtunnel import SSHTunnelForwarder
-    # from sqlalchemy import create_engine
-    #
-    # server =  SSHTunnelForwarder(
-    #     ('host', 22),
-    #     ssh_password="password",
-    #     ssh_username="username",
-    #     remote_bind_address=('127.0.0.1', 3306))
-    #
-    # server.start()
-    #
-    # engine = create_engine('mysql+mysqldb://user:pass@127.0.0.1:%s/db' % server.local_bind_port)
-    #
-    # # DO YOUR THINGS
-    #
-    # server.stop()
+    print('Opening SSH tunnel:', end=' ')
+    ssh_server = SSHTunnelForwarder(
+        (ssh_config['ssh_host'], int(ssh_config['ssh_port'])),
+        ssh_password=ssh_config["ssh_password"],
+        ssh_username=ssh_config["ssh_user"],
+        remote_bind_address=(config['host'],
+                             config['port']))
+    try:
+        ssh_server.start()
+        config['port'] = ssh_server.local_bind_port
+        engine = get_engine_tcpip(config)
+    except Exception as e:
+        print('Connection failed: {}'.format(e))
+        return None, None
+    return engine, ssh_server
 
 
 def update_users_actions(src_config: dict, dest_config: dict, query: str):
@@ -152,14 +137,14 @@ def get_engine(conn_config: dict):
     connection_keys = conn_config.keys()
     tcpip_config = {key: conn_config[key] for key in connection_keys & {'host', 'port', 'database', 'user', 'password',
                                                                         'name'}}
-
     if isinstance(conn_config['ssh_host'], str):
         ssh_config = {key: conn_config[key] for key in connection_keys & {'ssh_host', 'ssh_port', 'ssh_user',
                                                                           'ssh_password'}}
-        engine = connect_over_ssh(ssh_config, tcpip_config)
+        engine, ssh_engine = connect_over_ssh(ssh_config, tcpip_config)
     else:
         engine = get_engine_tcpip(tcpip_config)
-    return engine
+        ssh_engine = None
+    return engine, ssh_engine
 
 
 def get_engine_tcpip(config: dict):
@@ -355,7 +340,9 @@ def save_xls(list_dfs, _path, sheets_names=None):
     # query names should match with list_dfs - sheets will be named accordingly
     if sheets_names is None:
         sheets_names = []
-    with pd.ExcelWriter(_path, engine='xlsxwriter', options={'strings_to_formulas': False}) as writer:
+    with pd.ExcelWriter(_path,
+                        engine='xlsxwriter',
+                        engine_kwargs={'options': {'strings_to_formulas': False}}) as writer:
         for n, df in enumerate(list_dfs):
             if len(sheets_names) > 0:
                 df.to_excel(writer, sheets_names[n])
@@ -366,7 +353,7 @@ def save_xls(list_dfs, _path, sheets_names=None):
 
 
 async def fetch_data_async(installation_id, src_config, query):
-    src_engine = get_engine(src_config)
+    src_engine, ssh_engine = get_engine(src_config)
     if src_engine is not None:
         try:
             print('Executing query in installation_id: {} - {}'
