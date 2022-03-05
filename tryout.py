@@ -1,22 +1,13 @@
-import pandas
 import sqlalchemy
-import pandas as pd
-from datetime import datetime
-from configurations import queries
-from pathlib import Path
 from sshtunnel import SSHTunnelForwarder
-import asyncio
-from timeit import default_timer as timer
-from datetime import timedelta
-from helper_functions import get_connections, update_users_actions, update_installations, main_loop_connections, \
-    write_to_dest, simple_query_loop_connections, async_query_loop_connections
-from configurations import connections_file_path, qa_config, unity_config, dest_config, queries
+
+from configurations import connections_file_path
 import csv
 import urllib.parse
 
 
 def valid_connection(dictionary):
-    required = set(['host', 'port', 'user', 'password'])
+    required = {'host', 'port', 'user', 'password'}
     return required <= dictionary.keys()
 
 
