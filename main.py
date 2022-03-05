@@ -43,9 +43,7 @@ def update_db_account_management():
 
     if flag_async_query:
         # query = queries["field_entities"]["query_string"]
-        query = """SELECT g.id gid, gpid1, gpid2, g.research_group_id, bo.name rg_name, o.name org, g.creation_date, 
-        g.user_id FROM germplasms g left join research_groups rg on rg.id=g.research_group_id left join organizations 
-        o on o.id=rg.organization_id left join base_objects bo on bo.id=rg.id where  g.id = gpid1  or g.id = gpid2 """
+        query = """SELECT * from organizations """
         df = asyncio.run(async_query_loop_connections(connections, query, write_to_excel=True))
         print(df)
 
