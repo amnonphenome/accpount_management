@@ -6,84 +6,169 @@ from configurations import queries
 from pathlib import Path
 from sshtunnel import SSHTunnelForwarder
 import asyncio
+import csv
+import urllib.parse
 
 
-def get_connections(connections_file_full_path: str):
+def valid_connection(dictionary):
+    required = {'host', 'port', 'user', 'password'}
+    return required <= dictionary.keys()
+
+
+def get_connections(file: str):
     """
-    gets connections details from csv
-    :param connections_file_full_path:
-    :return: connections_dict by installation_id as key
+    reads csv and returns list of dicts of connections config
+    :param file:
+    :return:
     """
-    conns = pd.read_csv(connections_file_full_path)
-    conns = conns.loc[conns['connect'] == 1]
-    conns_dict = conns.set_index('installation_id', drop=False).to_dict('index')
-    return conns_dict
+    with open(file, encoding="utf-8-sig") as f:
+        conns = [{k: v for k, v in row.items()}
+                 for row in csv.DictReader(f, skipinitialspace=True)]
+        return conns
 
 
-def connect_over_ssh(ssh_config: dict, config: dict):
-    """
-    gets ssh and tcpip config dicts and connects to server
-    :param ssh_config:
-    :param config:
-    :return: sqlalchemy_engine, ssh_server
-    """
-    print('Opening SSH tunnel:', end=' ')
-    ssh_server = SSHTunnelForwarder(
-        (ssh_config['ssh_host'], int(ssh_config['ssh_port'])),
-        ssh_password=ssh_config["ssh_password"],
-        ssh_username=ssh_config["ssh_user"],
-        remote_bind_address=(config['host'],
-                             config['port']))
-    try:
-        ssh_server.start()
-        config['port'] = ssh_server.local_bind_port
-        engine = get_engine_tcpip(config)
-    except Exception as e:
-        print('Connection failed: {}'.format(e))
-        return None, None
-    return engine, ssh_server
+def create_connections(conns):
+    connections = []
+    for conn in conns:
+        if valid_connection(conn):
+            connections.append(Connection(conn))
+        else:
+            print('Connection {} invalid'.format(conn["name"]))
+            continue
+    return connections
 
 
-def update_users_actions(src_config: dict, dest_config: dict, query: str):
-    # read:
-    src_engine = get_engine(src_config)
-    try:
-        print('Connecting to {}: '.format(src_config["name"]), end=' ')
-        with src_engine.begin() as src_engine:
-            print('OK')
+class Connection:
+
+    connect = 1
+    installation_id = 0
+    name = 'Default'
+    host = None
+    port = None
+    database = None
+    user = None
+    password = None
+    ssh_host = None
+    ssh_port = None
+    ssh_user = None
+    ssh_password = None
+    is_ssh = False
+
+    def __init__(self, dictionary):
+        self.__dict__.update(dictionary)
+        self.full_name = self.__repr__()
+        if self.ssh_host != '' and self.ssh_host is not None:
+            self.is_ssh = True
+            self.ssh_tunnel = None
+        self.engine = None
+
+    def __enter__(self):
+        return self.connect_to_src()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self.disconnect_from_src()
+
+    def __repr__(self):
+        rep = '{}_{}'.format(self.name, self.installation_id)
+        return rep
+
+    def get_engine(self):
+        parsed_password = urllib.parse.quote_plus(self.password)
+        engine_string = "mysql+pymysql://{}:{}@{}:{}/{}" \
+            .format(self.user, parsed_password, self.host, str(self.port), self.database)
+        engine = sqlalchemy.create_engine(engine_string)
+        return engine
+
+    def connect_to_src(self):
+        if self.is_ssh:
+            ssh_tunnel = SSHTunnelForwarder(
+                (self.ssh_host, int(self.ssh_port)),
+                ssh_password=urllib.parse.quote_plus(self.ssh_password),
+                ssh_username=self.ssh_user,
+                remote_bind_address=(self.host, int(self.port)))
             try:
-                df = pd.read_sql_query(query, src_engine, index_col='id')
+                ssh_tunnel.start()
+                self.ssh_tunnel = ssh_tunnel
+                self.port = ssh_tunnel.local_bind_port
+                self.engine = self.get_engine()
+                self.engine.begin()
+                print('Connected to {} over ssh'.format(self.name))
+                return self.engine
             except Exception as e:
-                print('Query failed: {}'.format(e))
+                print('Connection over ssh failed: {}'.format(e))
+                return None
+        else:
+            try:
+                self.engine = self.get_engine()
+                self.engine.begin()
+                print('Connected to {}'.format(self.name))
+                return self.engine
+            except Exception as e:
+                print('Connection to {} failed: {}'.format(self.full_name, e))
+                return None
+
+    def disconnect_from_src(self):
+        self.engine.dispose()
+        print('Disconnected from {}'.format(self.name))
+
+    def get_data(self, query: str):
+        try:
+            with self as engine:
+                if engine is not None:
+                    print('Executing query in: {}'.format(self.full_name))
+                    df = pd.read_sql_query(query, engine)
+                    df['installation_id'] = self.installation_id
+                    return df
+                else:
+                    return None
+        except Exception as e:
+            print('Query execution failed in {}, error: {}'.format(self.full_name, e))
+
+    async def async_get_data(self, query: str):
+        try:
+            with self as engine:
+                if engine is not None:
+                    print('Executing query in: {}'.format(self.full_name))
+                    df = pd.read_sql_query(query, engine)
+                    df['installation_id'] = self.installation_id
+                    return df
+                else:
+                    return None
+        except Exception as e:
+            print('Query execution failed in {}, error: {}'.format(self.full_name, e))
+
+
+def update_users_actions(src_connection: Connection, dest_connection: Connection, query: str):
+    try:
+        df = src_connection.get_data(query)
     except Exception as e:
-        print('Failed, error: {}'.format(e))
-    # write:
-    dest_engine = get_engine_tcpip(dest_config)
+        print('Connection to {} failed: {}'.format(src_connection.full_name, e))
     am_users_actions_table = "am_users_actions"
-    print("Connecting to destination server: ", end=' ')
     try:
-        with dest_engine.begin() as dest_engine:
+        print("Connecting to destination server: ", end=' ')
+        dest_engine = dest_connection.connect_to_src()
+        print('OK')
+        try:
+            print("Updating {}..".format(am_users_actions_table), end=' ')
+            df.to_sql(
+                name=am_users_actions_table,
+                con=dest_engine,
+                index=True,
+                if_exists='replace',
+                dtype={'id': sqlalchemy.types.INT,
+                       'name': sqlalchemy.types.VARCHAR(length=255)
+                       }
+            )
+            # # Fix the pk back: todo: why is this happening?
+            dest_engine.execute('''
+                        ALTER TABLE `db_account_management`.{}
+                        CHANGE COLUMN `id` `id` INT NOT NULL AUTO_INCREMENT ,
+                        ADD PRIMARY KEY (`id`);
+                        '''.format(am_users_actions_table))
             print('OK')
-            try:
-                print("Updating {}..".format(am_users_actions_table), end=' ')
-                df.to_sql(
-                    name=am_users_actions_table,
-                    con=dest_engine,
-                    index=True,
-                    if_exists='replace',
-                    dtype={'id': sqlalchemy.types.INT,
-                           'name': sqlalchemy.types.VARCHAR(length=255)
-                           }
-                )
-                # # Fix the pk back: todo: why is this happening?
-                dest_engine.execute('''
-                            ALTER TABLE `db_account_management`.{}
-                            CHANGE COLUMN `id` `id` INT NOT NULL AUTO_INCREMENT ,
-                            ADD PRIMARY KEY (`id`);
-                            '''.format(am_users_actions_table))
-                print('OK')
-            except Exception as e:
-                print('Error updating table {}: {}'.format(am_users_actions_table, e))
+            dest_connection.disconnect_from_src()
+        except Exception as e:
+            print('Error updating table {}: {}'.format(am_users_actions_table, e))
     except Exception as e:
         print('Failed, error: {}'.format(e))
 
@@ -131,38 +216,6 @@ def update_installations(src_config: dict, dest_config: dict, query: str):
                 print('Error updating table {}: {}'.format(table_name, e))
     except Exception as e:
         print('Failed, error: {}'.format(e))
-
-
-def get_engine(conn_config: dict):
-    connection_keys = conn_config.keys()
-    tcpip_config = {key: conn_config[key] for key in connection_keys & {'host', 'port', 'database', 'user', 'password',
-                                                                        'name'}}
-    if isinstance(conn_config['ssh_host'], str):
-        ssh_config = {key: conn_config[key] for key in connection_keys & {'ssh_host', 'ssh_port', 'ssh_user',
-                                                                          'ssh_password'}}
-        engine, ssh_engine = connect_over_ssh(ssh_config, tcpip_config)
-    else:
-        engine = get_engine_tcpip(tcpip_config)
-        ssh_engine = None
-    return engine, ssh_engine
-
-
-def get_engine_tcpip(config: dict):
-    """
-    tries to connect (tcpip) using config
-    :param config:
-    :return: engine or error
-    """
-    import urllib.parse
-    host = config['host']
-    port = config['port']
-    database = config['database']
-    user = config['user']
-    password = config['password']
-    parsed_password = urllib.parse.quote_plus(password)
-    engine_string = "mysql+pymysql://" + user + ":" + parsed_password + "@" + host + ":" + str(port) + "/" + database
-    engine = sqlalchemy.create_engine(engine_string)
-    return engine
 
 
 def main_loop_connections(connections: dict, dest_config: dict, flag_users=False, flag_orgs=False, flag_ual=False):
@@ -295,47 +348,6 @@ def write_to_dest(df: pandas.DataFrame, dest_config: dict, table_name: str):
             print('Error updating table {}: {}'.format(table_name, e))
 
 
-def simple_query_loop_connections(connections: dict, query: str, write_to_excel=True):
-    """
-
-    :param connections:
-    :param query:
-    :param write_to_excel:
-    :return:
-    """
-    df = pd.DataFrame()
-    installation_ids = connections.keys()
-    for installation_id in installation_ids:
-        src_config = connections[installation_id]
-        # get engine for current installation
-        src_engine = get_engine(src_config)
-        try:
-            print('Connecting to installation_id: {} - {}:'
-                  .format(src_config["installation_id"],
-                          src_config["name"]),
-                  end=' ')
-            with src_engine.begin() as src_engine:
-                print('OK')
-                try:
-                    print('Executing: {}'.format(query))
-                    new_rows = pd.read_sql_query(query, src_engine)
-                    new_rows['installation_id'] = installation_id
-                    df = pd.concat([df, new_rows])
-                    print('new rows: \n{})'.format(new_rows.head(5)))
-                except Exception as e:
-                    print('Query execution failed, error: {}'.format(e))
-        except Exception as e:
-            print('Connection failed, error: {}'.format(e))
-    if write_to_excel:
-        now = datetime.now()
-        dt_string = now.strftime("%y%m%d_%H%M%S")
-        file_name = "output_"+dt_string+".xlsx"
-        path = Path("output", file_name)
-        df_list = [df]
-        save_xls(df_list, path)
-    return df
-
-
 def save_xls(list_dfs, _path, sheets_names=None):
     # query names should match with list_dfs - sheets will be named accordingly
     if sheets_names is None:
@@ -352,29 +364,7 @@ def save_xls(list_dfs, _path, sheets_names=None):
     print('output.xlsx path: {}'.format(_path))
 
 
-async def fetch_data_async(installation_id, src_config, query):
-    src_engine, ssh_engine = get_engine(src_config)
-    if src_engine is not None:
-        try:
-            print('Executing query in installation_id: {} - {}'
-                  .format(src_config["installation_id"],
-                          src_config["name"]))
-            with src_engine.begin() as src_engine:
-                try:
-                    # print('Executing in installation_id {}'.format(installation_id))
-                    df = pd.read_sql_query(query, src_engine)
-                    df['installation_id'] = installation_id
-                    return df
-                except Exception as e:
-                    print('Query execution failed, error: {}'.format(e))
-        except Exception as e:
-            print('Connection failed, error: {}'.format(e))
-            return None
-    else:
-        return None
-
-
-async def async_query_loop_connections(connections: dict, query: str, write_to_excel=True):
+async def async_query_loop_connections(connections: list, query: str, write_to_excel=True):
     """
 
     :param connections:
@@ -382,12 +372,14 @@ async def async_query_loop_connections(connections: dict, query: str, write_to_e
     :param write_to_excel:
     :return:
     """
-    installation_ids = connections.keys()
     tasks = []
     replies = []
-    for installation_id in installation_ids:
-        src_config = connections[installation_id]
-        tasks.append(asyncio.create_task(fetch_data_async(installation_id, src_config, query)))
+    for conn in connections:
+        try:
+            tasks.append(asyncio.create_task(conn.async_get_data(query)))
+        except Exception as e:
+            print('Connection to {} failed: {}'.format(conn.full_name, e))
+
     for task in tasks:
         reply = await task
         if reply is not None:
@@ -404,5 +396,134 @@ async def async_query_loop_connections(connections: dict, query: str, write_to_e
             save_xls(df_list, path)
         return df
 
-
 exec(open("main.py").read())
+
+# async def fetch_data_async(installation_id, src_config, query):
+#     src_engine, ssh_engine = get_engine(src_config)
+#     if src_engine is not None:
+#         try:
+#             print('Executing query in installation_id: {} - {}'
+#                   .format(src_config["installation_id"],
+#                           src_config["name"]))
+#             with src_engine.begin() as src_engine:
+#                 try:
+#                     # print('Executing in installation_id {}'.format(installation_id))
+#                     df = pd.read_sql_query(query, src_engine)
+#                     df['installation_id'] = installation_id
+#                     return df
+#                 except Exception as e:
+#                     print('Query execution failed, error: {}'.format(e))
+#         except Exception as e:
+#             print('Connection failed, error: {}'.format(e))
+#             return None
+#     else:
+#         return None
+
+
+# def simple_query_loop_connections(connections: list, query: str, write_to_excel=True):
+#     """
+#
+#     :param connections:
+#     :param query:
+#     :param write_to_excel:
+#     :return:
+#     """
+#     df = pd.DataFrame()
+#     # installation_ids = connections.keys()
+#     for conn in connections:
+#         src_config = connections[installation_id]
+#         # get engine for current installation
+#         src_engine = get_engine(src_config)
+#         try:
+#             print('Connecting to installation_id: {} - {}:'
+#                   .format(src_config["installation_id"],
+#                           src_config["name"]),
+#                   end=' ')
+#             with src_engine.begin() as src_engine:
+#                 print('OK')
+#                 try:
+#                     print('Executing: {}'.format(query))
+#                     new_rows = pd.read_sql_query(query, src_engine)
+#                     new_rows['installation_id'] = installation_id
+#                     df = pd.concat([df, new_rows])
+#                     print('new rows: \n{})'.format(new_rows.head(5)))
+#                 except Exception as e:
+#                     print('Query execution failed, error: {}'.format(e))
+#         except Exception as e:
+#             print('Connection failed, error: {}'.format(e))
+#     if write_to_excel:
+#         now = datetime.now()
+#         dt_string = now.strftime("%y%m%d_%H%M%S")
+#         file_name = "output_"+dt_string+".xlsx"
+#         path = Path("output", file_name)
+#         df_list = [df]
+#         save_xls(df_list, path)
+#     return df
+
+
+# def get_engine(conn_config: dict):
+#     connection_keys = conn_config.keys()
+#     tcpip_config = {key: conn_config[key] for key in connection_keys & {'host', 'port', 'database', 'user', 'password',
+#                                                                         'name'}}
+#     if isinstance(conn_config['ssh_host'], str):
+#         ssh_config = {key: conn_config[key] for key in connection_keys & {'ssh_host', 'ssh_port', 'ssh_user',
+#                                                                           'ssh_password'}}
+#         engine, ssh_engine = connect_over_ssh(ssh_config, tcpip_config)
+#     else:
+#         engine = get_engine_tcpip(tcpip_config)
+#         ssh_engine = None
+#     return engine, ssh_engine
+#
+#
+# def get_engine_tcpip(config: dict):
+#     """
+#     tries to connect (tcpip) using config
+#     :param config:
+#     :return: engine or error
+#     """
+#     import urllib.parse
+#     host = config['host']
+#     port = config['port']
+#     database = config['database']
+#     user = config['user']
+#     password = config['password']
+#     parsed_password = urllib.parse.quote_plus(password)
+#     engine_string = "mysql+pymysql://" + user + ":" + parsed_password + "@" + host + ":" + str(port) + "/" + database
+#     engine = sqlalchemy.create_engine(engine_string)
+#     return engine
+
+
+# def get_connections(connections_file_full_path: str):
+#     """
+#     gets connections details from csv
+#     :param connections_file_full_path:
+#     :return: connections_dict by installation_id as key
+#     """
+#     conns = pd.read_csv(connections_file_full_path)
+#     conns = conns.loc[conns['connect'] == 1]
+#     conns_dict = conns.set_index('installation_id', drop=False).to_dict('index')
+#     return conns_dict
+
+
+# def connect_over_ssh(ssh_config: dict, config: dict):
+#     """
+#     gets ssh and tcpip config dicts and connects to server
+#     :param ssh_config:
+#     :param config:
+#     :return: sqlalchemy_engine, ssh_server
+#     """
+#     print('Opening SSH tunnel:', end=' ')
+#     ssh_server = SSHTunnelForwarder(
+#         (ssh_config['ssh_host'], int(ssh_config['ssh_port'])),
+#         ssh_password=ssh_config["ssh_password"],
+#         ssh_username=ssh_config["ssh_user"],
+#         remote_bind_address=(config['host'],
+#                              config['port']))
+#     try:
+#         ssh_server.start()
+#         config['port'] = ssh_server.local_bind_port
+#         engine = get_engine_tcpip(config)
+#     except Exception as e:
+#         print('Connection failed: {}'.format(e))
+#         return None, None
+#     return engine, ssh_server

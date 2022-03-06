@@ -1,25 +1,27 @@
 from timeit import default_timer as timer
 from datetime import timedelta
 from helper_functions import get_connections, update_users_actions, update_installations, main_loop_connections, \
-    write_to_dest, simple_query_loop_connections, async_query_loop_connections
+    write_to_dest, async_query_loop_connections, create_connections, valid_connection, Connection
 from configurations import connections_file_path, qa_config, unity_config, dest_config, queries
 import asyncio
 
 
 def update_db_account_management():
-    flag_users_actions = False
+    flag_users_actions = True
     flag_installations = False
     flag_users = False
     flag_orgs = False
     flag_ual = False
     flag_simple_query = False
-    flag_async_query = True
+    flag_async_query = False
 
-    connections = get_connections(connections_file_path)
+    connections = [conn for conn in create_connections(get_connections(connections_file_path)) if conn.connect == '1']
+    dest_connection = Connection(dest_config)
+    qa_connection = Connection(qa_config)
 
     if flag_users_actions:
         query = queries["am_users_actions"]["query_string"]
-        update_users_actions(qa_config, dest_config, query)
+        update_users_actions(qa_connection, dest_connection, query)
 
     if flag_installations:
         print('Updating installations table from {}'.format(unity_config["name"]))
@@ -43,7 +45,7 @@ def update_db_account_management():
 
     if flag_async_query:
         # query = queries["field_entities"]["query_string"]
-        query = """SELECT * from organizations """
+        query = """SELECT * from organizations"""
         df = asyncio.run(async_query_loop_connections(connections, query, write_to_excel=True))
         print(df)
 

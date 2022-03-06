@@ -6,7 +6,8 @@ dest_config = {
     "port": 3306,
     "database": "db_account_management",
     "user": "root",
-    "password": "tnbui115"}
+    "password": "tnbui115",
+    "name": "local_db_account_management"}
 
 qa_config = {
     "name": "qa",
