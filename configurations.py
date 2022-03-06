@@ -20,6 +20,7 @@ qa_config = {
 
 unity_config = {
     "name": "unity",
+    "installation_id": 7,
     "host": "52.16.89.59",
     "port": 3306,
     "database": "pheno20",
